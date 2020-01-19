@@ -100,7 +100,7 @@ scaled <- transform(scaled, #Creating 'id'&'label' to scaled data
 ```
 
 sub_data로 전처리 완료된 데이터를 복사해두기(작업하다가 실수할지 혹시 모르니까)
-그리고 필요한 데이터들 environment에서 제거
+그리고 필요없는 데이터들 environment에서 제거
 ```{r}
 sub_data <- scaled
 {rm(apd.data)
