@@ -1,0 +1,139 @@
+---
+title: "sub트레인데이터 작업"
+output: html_notebook
+---
+
+```{r}
+library(rmarkdown)
+library(knitr)
+library(data.table)
+library(dplyr)
+```
+
+워킹디렉토리 설정 및, 디렉션 확인, 트레인데이터 목록 리스트화
+```{r}
+getwd()
+setwd('~/Documents/원자력발전소_공모전/train')
+getwd() 
+dir() %>% table() %>% sum()
+train.list <- dir() %>% list()
+```
+
+
+Append train data(id=0~id=29)
+워킹 디렉토리 설정 및 트레인 라벨 데이터 가져오기
+```{r}
+setwd('~/Documents/원자력발전소_공모전')
+train_label <- fread('train_label.csv') %>% as.data.frame()
+
+setwd('~/Documents/원자력발전소_공모전/train')
+getwd()
+```
+
+0.csv~29.csv 트레인 데이터 가져와서 리스트로 합치고, 데이터 벡터용량이 부족한 관계로 합친 후 각각의 데이터는 제거
+```{r}
+for (i in 1:30) { 
+  file.name <- paste0('data',i-1)
+  assign(file.name, fread(train.list[[1]][i]) %>% data.frame())   #loadding data
+}
+
+list.frame <- mget(ls(pattern = 'data')) #From data.frame, to list
+rm(list=ls(pattern = 'data')) #clean up the environment
+```
+
+각각의 데이터에 맞는 id, label값을 추가한 뒤 어팬드.
+```{r}
+apd.data <- NULL
+for (i in 1:30) {
+  list.frame[[i]] <- transform(list.frame[[i]],
+                               label = train_label[i,2],   #creating 'id'&'label'
+                               id = i-1)
+  apd.data <- rbind(apd.data, list.frame[[i]])   #appending data
+}
+```
+
+어팬드 한 뒤, 데이터들의 클래스 확인>> 전부 숫자.
+스케일링 작업 실시.
+스케일링 작업 후에 NA가 발생한 칼럼을 확인, 전체 행이 18000개인데, 모든 행값이 18000으로 바뀐 칼럼들만 존재. 즉, 모든 행값이 동일한 숫자인 경우인거같음.
+NA칼럼들 쳐내고, 스케일링된 데이터에 id, label 붙여넣기
+```{r}
+sapply(apd.data[,2:5122], class) %>% table  #check class of data >> all numeric
+scaled <- sapply(apd.data[,2:5122], scale) %>% as.data.frame() #data scaling
+
+col_na = NULL
+for (i in 1:length(names(scaled))) {  #NA's check 
+  e1 = sum(is.na(scaled[,i]))
+  col_na <- rbind(col_na, e1) %>% data.frame()
+  colnames(col_na) <- 'num_na'
+}
+col_na %>% table()
+
+scaled <- scaled[, colSums(is.na(scaled)) != nrow(scaled)] #Remove NAs
+scaled <- transform(scaled, #Creating 'id'&'label' to scaled data
+                    time = apd.data$time,
+                    id = apd.data$id,
+                    label = apd.data$label)
+```
+
+sub_data로 전처리 완료된 데이터를 복사해두기(작업하다가 실수할지 혹시 모르니까)
+그리고 필요없는 데이터들 environment에서 제거, 그리고 데이터 저장
+```{r}
+sub_data <- scaled
+sub_data$label <- as.factor(sub_data$label)
+{rm(apd.data)
+  rm(col_na)
+  rm(list.frame)
+  rm(train.list)
+  rm(train_label)}
+
+write.csv(sub_data, file = 'sub_data.csv', row.names = FALSE)
+```
+
+
+reduce demention by PCA and make PCA matrics
+```{r}
+sub_data <- fread('sub_data.csv')
+
+pca <- prcomp(sub_data[,1:3300])
+options(max.print=10000)
+summary(pca)
+pca.rot <- pca$rotation %>% data.frame() 
+
+plot(pca,
+     type = "l")
+
+pca.variables <- as.matrix(sub_data[,1:3300]) %*% pca$rotation
+
+pca_data <- cbind(sub_data[,3301:3303], as.data.frame(pca.variables))
+selected_pca_data <-pca_data[,c(1:200)]
+```
+
+random Forest modeling
+앞에서 PCA분석을 통해서 변수를 197개까지 줄였음! (PCA197 까지 변동설명력이 86%)
+(사실 PCA496까지해서 변동설명력이 95%까지 되도록 올리고 싶었지만 모델링하는데 시간이 너무 오래걸려서 197까지만 한 것임.)
+
+이 PCA데이터를 바탕으로 랜포모델링!
+```{r}
+#1.random forest
+library(MASS)
+library(randomForest)
+library(caret)
+library(e1071)
+
+set.seed(10)
+
+intrain <- createDataPartition(y=selected_pca_data$label, p=0.8, list = F)
+train <- selected_pca_data[intrain,]
+test <- selected_pca_data[-intrain,]
+
+rf.fit = randomForest(label ~ .-id-time
+                      , data=train, mtry = floor(sqrt(197)), ntree = 500, importance = T)
+rf.fit
+
+varImpPlot(rf.fit, n.var = 197) #check variables importance
+
+y_pred <- predict(rf.fit, newdata = test[,4:200])
+
+confusionMatrix(y_pred, train$label)
+```
+
