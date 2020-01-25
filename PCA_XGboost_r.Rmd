@@ -1,0 +1,193 @@
+---
+title: "PCA and XGboost in r"
+output: html_notebook
+---
+
+#Append train data
+```{r}
+install.packages('data.table')
+install.packages('dplyr')
+
+library(data.table)
+library(dplyr)
+
+setwd('~/Documents/원자력발전소_공모전')
+train_label <- fread('train_label.csv') %>% as.data.frame()
+sample <- fread('sample_submission.csv') %>% as.data.frame()
+
+setwd('~/Documents/원자력발전소_공모전/train')
+getwd()
+  
+for (i in 1:300) { 
+  file.name <- paste0('data',i-1)
+  assign(file.name, fread(train.list[[1]][i]) %>% data.frame())   #loadding data
+  if (i%%10==0) print(paste0(i, ' files were loaded'))
+  }
+
+list.frame <- mget(ls(pattern = 'data')) #From data.frame, to list
+rm(list=ls(pattern = 'data')) #clean up the environment
+
+apd.data <- NULL
+for (i in 1:300) {
+  list.frame[[i]] <- transform(list.frame[[i]],
+                               label = train_label[i,2],   #creating 'id'&'label'
+                               id = i-1)
+  apd.data <- rbind(apd.data, list.frame[[i]])   #appending data
+  if (i%%3==1) Sys.sleep(1)
+  if (i%%10==0) print(paste0(i, ' data sets were appended'))
+}
+
+sapply(apd.data[,2:(dim(apd.data)[2]-2)], class) %>% table #character columns exist
+apd.data = apd.data[, !sapply(apd.data[,2:(dim(apd.data)[2]-2)],
+                              is.character)] #remove character columns if exist
+scaled <- sapply(apd.data[,2:(dim(apd.data)[2]-2)], scale) %>% as.data.frame() #data scaling
+
+col_na = NULL
+for (i in 1:length(names(scaled))) {  #NA's check 
+  e1 = sum(is.na(scaled[,i]))
+  col_na <- rbind(col_na, e1) %>% data.frame()
+  colnames(col_na) <- 'num_na'
+}
+col_na %>% table()
+
+scaled <- scaled[, colSums(is.na(scaled)) != nrow(scaled)] #Remove NAs
+scaled <- transform(scaled, #Creating 'id'&'label' to scaled data
+                    time = apd.data$time,
+                    id = apd.data$id,
+                    label = apd.data$label)
+
+sub_data <- scaled
+sub_data$label <- as.factor(sub_data$label)
+{rm(apd.data)
+  rm(col_na)
+  rm(list.frame)
+  rm(train.list)
+  rm(train_label)}
+
+write.csv(sub_data, file = 'sub_data.csv', row.names = FALSE)
+
+```
+
+
+
+#PCA
+```{r}
+#reduce demention by PCA and make PCA matrics
+sub_data <- fread('sub_data.csv')
+
+pca <- prcomp(sub_data[,1:(dim(sub_data)[2]-3)])
+options(max.print=10000)
+summary(pca)
+pca.rot <- pca$rotation %>% data.frame() 
+
+pca.variables <- as.matrix(sub_data[,1:(dim(sub_data)[2]-3)]) %*% pca$rotation
+
+pca_data <- cbind(sub_data[,(dim(sub_data)[2]-2):(dim(sub_data)[2])], 
+                  as.data.frame(pca.variables))
+
+selected_pca_data <-pca_data[,c(1:496)] #up to PC496 >> cumulative proportion = 95%, 근데 전체 데이터로 돌리면 몇 PC까지 가야 95%까지 되는지 다를 수 있으니 summary(pca)보고 확인해야함. 
+write.csv(pca_data, file = 'pca_data.csv', row.names = FALSE)
+```
+
+
+#library and basic setting for modelling
+```{r}
+#modelling
+install.packages('xgboost')
+install.packages('MLmetrics')
+
+library(xgboost)
+library(MLmetrics)
+
+rm(list = ls())
+
+pca_data <- fread('pca_data.csv') %>% as.data.frame()
+selected_pca_data <-pca_data[,c(1:496)] #up to PC496 >> cumulative proportion = 95%
+
+selected_pca_data$label = selected_pca_data$label %>% as.factor() ;print(paste('the variable is factor?',is.factor(selected_pca_data$label)))
+#selected_pca_data$id = selected_pca_data$id %>% as.factor();print(paste('the variable is factor?',is.factor(selected_pca_data$id)))
+
+
+
+```
+
+
+XGboost 코드!!
+XG는 디테일하게 내가 설명안해도 구글에 코드가 너무 쉽게 잘 되있어서 잘 이해될거라 믿음!
+```{r}
+#2.XG boost
+set.seed(100)
+
+
+# Convert the Species factor to an integer class starting at 0
+b_status = selected_pca_data$label
+label = as.integer(selected_pca_data$label)-1
+label.frame = data.frame(label = label, 
+                         time = selected_pca_data$time, 
+                         id = selected_pca_data$id)
+selected_pca_data$label = NULL
+
+# Make traing and testing set
+n = nrow(selected_pca_data)
+train.index = sample(n, floor(0.75*n))
+train.data = as.matrix(selected_pca_data[train.index,])
+train.label = label[train.index]
+test.data = as.matrix(selected_pca_data[-train.index,] %>% filter(time<61))
+test.label = label.frame[-train.index,] %>% filter(time<61) %>% dplyr::select(label)
+test.label = test.label$label
+
+# Transform the two data sets into xgb.Matrix
+xgb.train = xgb.DMatrix(data=train.data[,3:dim(train.data)[2]],label=train.label)
+xgb.test = xgb.DMatrix(data=test.data[,3:dim(test.data)[2]],label=test.label)
+
+# Define the parameters for multinomial classification
+num_class = length(levels(b_status))
+params = list(
+  booster="gbtree",
+  eta=0.001,
+  max_depth=5,
+  gamma=3,
+  subsample=0.75,
+  colsample_bytree=1,
+  objective="multi:softprob",
+  eval_metric="mlogloss",
+  num_class=num_class
+)
+
+# Train the XGBoost classifer
+xgb.fit=xgb.train(
+  params=params,
+  data=xgb.train,
+  nrounds=10000,
+  nthreads=1,
+  early_stopping_rounds=10,
+  watchlist=list(val1=xgb.train,val2=xgb.test),
+  verbose=0
+)
+
+# Review the final model and results
+xgb.fit
+
+# Predict outcomes with the test data
+xgb.pred = predict(xgb.fit, test.data[,3:dim(test.data)[2]], reshape=T)
+xgb.pred = as.data.frame(xgb.pred)
+xgb.pred = transform(xgb.pred,
+                     time = test.data %>% as.data.frame() %>% dplyr::select(time),
+                     id = test.data %>% as.data.frame() %>% dplyr::select(id),
+                     label = levels(b_status)[test.label+1] %>% as.character() %>% as.numeric())
+colnames(xgb.pred) = c(levels(b_status), 'time', 'id','label')
+
+
+# Use the predicted label with the highest probability
+xgb.pred = aggregate(xgb.pred, list(id = xgb.pred$id), mean)
+xgb.pred = xgb.pred[,2:(dim(xgb.pred)[2])]
+xgb.pred$prediction = apply(xgb.pred[,1:(dim(xgb.pred)[2]-3)],1,
+                            function(x) colnames(xgb.pred[,1:(dim(xgb.pred)[2]-3)][which.max(x)]))
+
+
+# Calculate the final accuracy
+result = sum(xgb.pred$prediction==xgb.pred$label)/nrow(xgb.pred)
+print(paste("Final Accuracy =",sprintf("%1.2f%%", 100*result)))
+MultiLogLoss(y_pred = xgb.pred[,1:(dim(xgb.pred)[2]-4)], 
+        y_true = xgb.pred$label %>% as.character() %>% as.factor())
+
