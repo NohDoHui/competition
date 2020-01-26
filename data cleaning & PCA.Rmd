@@ -1,0 +1,99 @@
+---
+title: "data cleaning & PCA"
+output: html_notebook
+---
+
+#Append train data
+```{r}
+install.packages('data.table')
+install.packages('dplyr')
+
+library(data.table)
+library(dplyr)
+
+getwd()
+setwd('~/Documents/원자력발전소_공모전/train')
+getwd() 
+dir() %>% table() %>% sum()
+train.list <- dir() %>% list()
+
+setwd('~/Documents/원자력발전소_공모전')
+train_label <- fread('train_label.csv') %>% as.data.frame()
+
+setwd('~/Documents/원자력발전소_공모전/train')
+getwd()
+  
+for (i in 1:10) { 
+  file.name <- paste0('data', strsplit(as.character(train.list[[1]][i]),
+                                           split = ".",
+                                           fixed = T)[[1]][1])
+  assign(file.name, fread(train.list[[1]][i]) %>% data.frame())   #loadding data
+  if (i%%10==0) print(paste0(i, ' files were loaded'))
+  }
+
+list.frame <- mget(ls(pattern = 'data')) #From data.frame, to list
+rm(list=ls(pattern = 'data')) #clean up the environment
+
+apd.data <- NULL
+for (i in 1:10) {
+  list.frame[[i]] <- transform(list.frame[[i]],
+                               label = train_label[i,2],   #creating 'id'&'label'
+                               id = strsplit(as.character(train.list[[1]][i]),
+                                             split = ".",
+                                             fixed = T)[[1]][1])
+  apd.data <- rbind(apd.data, list.frame[[i]])   #appending data
+  if (i%%10==0) Sys.sleep(1)
+  if (i%%10==0) print(paste0(i, ' data sets were appended'))
+}
+
+sapply(apd.data[,2:(dim(apd.data)[2]-2)], class) %>% table #character columns exist?
+numeric.data = apd.data[,2:(dim(apd.data)[2]-2)] %>% select_if(is.numeric) #select only numeric columns if character columns exist
+scaled <- sapply(numeric.data, scale) %>% as.data.frame() #data scaling
+
+col_na = NULL
+for (i in 1:length(names(scaled))) {  #NA's check 
+  e1 = sum(is.na(scaled[,i]))
+  col_na <- rbind(col_na, e1) %>% data.frame()
+  colnames(col_na) <- 'num_na'
+}
+col_na %>% table()
+
+scaled <- scaled[, colSums(is.na(scaled)) != nrow(scaled)] #Remove NAs
+scaled <- transform(scaled, #Creating 'id'&'label' to scaled data
+                    time = apd.data$time,
+                    id = apd.data$id,
+                    label = apd.data$label)
+
+sub_data <- scaled
+sub_data$label <- as.factor(sub_data$label)
+{rm(apd.data)
+  rm(col_na)
+  rm(list.frame)
+  rm(train.list)
+  rm(train_label)}
+
+write.csv(sub_data, file = 'sub_data.csv', row.names = FALSE)
+
+
+```
+
+
+
+#PCA
+```{r}
+#reduce demention by PCA and make PCA matrics
+sub_data <- fread('sub_data.csv')
+
+pca <- prcomp(sub_data[,1:(dim(sub_data)[2]-3)])
+options(max.print=10000)
+summary(pca)
+pca.rot <- pca$rotation %>% data.frame() 
+
+pca.variables <- as.matrix(sub_data[,1:(dim(sub_data)[2]-3)]) %*% pca$rotation
+
+pca_data <- cbind(sub_data[,(dim(sub_data)[2]-2):(dim(sub_data)[2])], 
+                  as.data.frame(pca.variables))
+
+selected_pca_data <-pca_data[,c(1:496)] #up to PC496 >> cumulative proportion = 95%, 근데 전체 데이터로 돌리면 몇 PC까지 가야 95%까지 되는지 다를 수 있으니 summary(pca)보고 확인해야함. 
+write.csv(pca_data, file = 'pca_data.csv', row.names = FALSE)
+```
