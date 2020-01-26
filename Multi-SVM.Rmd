@@ -1,0 +1,65 @@
+---
+title: "Multi-SVM"
+output: html_notebook
+---
+
+#0. modelling
+```{r}
+install.packages('xgboost')
+install.packages('MASS')
+install.packages('randomForest')
+install.packages('caret')
+install.packages('e1071')
+install.packages('MLmetrics')
+install.packages('fread')
+
+
+library(xgboost)
+library(MASS)
+library(randomForest)
+library(caret)
+library(e1071)
+library(MLmetrics)
+library(fread)
+
+rm(list = ls())
+
+setwd("/Users/NDH/Documents/원자력발전소_공모전/train")
+getwd()
+
+pca_data <- fread('pca_data.csv') %>% as.data.frame()
+selected_pca_data <-pca_data[,c(1:496)] #up to PC496 >> cumulative proportion = 95%
+selected_pca_data <-pca_data[,c(1:30)] #just for simple take 30
+
+selected_pca_data$label = selected_pca_data$label %>% as.factor() ;print(paste('the variable is factor?',is.factor(selected_pca_data$label)))
+#selected_pca_data$id = selected_pca_data$id %>% as.factor();print(paste('the variable is factor?',is.factor(selected_pca_data$id)))
+
+```
+
+#Multi-SVM
+```{r}
+set.seed(100)
+
+selected_pca_data <- pca_data[,1:30]
+selected_pca_data$label <- as.factor(selected_pca_data$label)
+selected_pca_data$label %>% is.factor()
+
+intrain <- createDataPartition(y=selected_pca_data$label, p=0.8, list = F)
+train <- selected_pca_data[intrain,] %>% as.data.frame() %>% dplyr::select(-'id')
+test <- selected_pca_data[-intrain,] %>% as.data.frame() %>% dplyr::select(-'id') %>% filter(time<61)
+test.id = selected_pca_data[-intrain,] %>% as.data.frame() %>% dplyr::select('id', 'time', 'label') %>% filter(time<61)
+
+svm.fit <- e1071::svm(label~., data=train, 
+            method="C-classification", kernal="radial", 
+            gamma=0.1, cost=10, probability = TRUE)
+svm.fit
+
+test_x = dplyr::select(test, -'label')
+test_y = test$label
+
+pred <- predict(svm.fit, test_x, probability = TRUE)
+MultiLogLoss(y_true = test_y, y_pred = attr(pred, "probabilities"))
+
+
+```
+
