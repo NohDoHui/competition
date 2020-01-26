@@ -1,0 +1,62 @@
+---
+title: "RandomForest"
+output: html_notebook
+---
+
+
+#0. modelling
+```{r}
+install.packages('randomForest')
+install.packages('caret')
+install.packages('e1071')
+install.packages('MLmetrics')
+
+library(randomForest)
+library(caret)
+library(e1071)
+library(MLmetrics)
+
+setwd('~/Documents/원자력발전소_공모전/train')
+getwd()
+
+rm(list = ls())
+
+pca_data <- fread('pca_data.csv') %>% as.data.frame()
+selected_pca_data <-pca_data[,c(1:496)] #up to PC496 >> cumulative proportion = 95%
+selected_pca_data <-pca_data[,c(1:30)] #just for simple take 30
+
+selected_pca_data$label = selected_pca_data$label %>% as.factor() ;print(paste('the variable is factor?',is.factor(selected_pca_data$label)))
+#selected_pca_data$id = selected_pca_data$id %>% as.factor();print(paste('the variable is factor?',is.factor(selected_pca_data$id)))
+
+```
+
+
+#1.random forest
+```{r}
+set.seed(10)
+
+intrain <- createDataPartition(y=selected_pca_data$label, p=0.8, list = F)
+train <- selected_pca_data[intrain,] %>% as.data.frame() %>% dplyr::select(-'id')
+test <- selected_pca_data[-intrain,] %>% as.data.frame() %>% dplyr::select(-'id') %>% filter(time<61)
+test.id = selected_pca_data[-intrain,] %>% as.data.frame() %>% dplyr::select('id', 'time', 'label') %>% filter(time<61)
+
+rf.fit = randomForest(label ~ ., data=train, mtry = floor(sqrt(27)), ntree = 500, importance = T)
+rf.fit
+
+test_x = dplyr::select(test, -'label')
+test_y = test$label
+
+y_pred <- predict(rf.fit, test_x, type = 'prob') %>% as.data.frame() %>% cbind(id=test.id$id,
+                                                                               label=test.id$label %>% as.character() %>% as.numeric())
+
+rf.pred = aggregate(y_pred, list(id = y_pred$id), mean)
+rf.pred = rf.pred[,2:(dim(rf.pred)[2])]
+rf.pred$prediction = apply(rf.pred[,1:(dim(rf.pred)[2]-2)],1,
+                            function(x) colnames(rf.pred[,1:(dim(rf.pred)[2]-2)][which.max(x)]))
+
+MultiLogLoss(y_pred = rf.pred[,1:(dim(rf.pred)[2]-3)] %>% as.matrix(),
+             y_true = rf.pred$label %>% as.character() %>% as.factor())
+
+
+```
+
