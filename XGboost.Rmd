@@ -1,0 +1,109 @@
+---
+title: "XGboost"
+output: html_notebook
+---
+
+
+
+#modelling
+```{r}
+
+install.packages('xgboost')
+install.packages('MLmetrics')
+
+library(xgboost)
+library(MLmetrics)
+
+rm(list = ls())
+
+pca_data <- fread('pca_data.csv') %>% as.data.frame()
+selected_pca_data <-pca_data[,c(1:496)] #up to PC496 >> cumulative proportion = 95%
+
+selected_pca_data$label = selected_pca_data$label %>% as.factor() ;print(paste('the variable is factor?',is.factor(selected_pca_data$label)))
+#selected_pca_data$id = selected_pca_data$id %>% as.factor();print(paste('the variable is factor?',is.factor(selected_pca_data$id)))
+
+
+```
+
+
+#XG boost
+```{r}
+
+set.seed(100)
+
+
+# Convert the Species factor to an integer class starting at 0
+b_status = selected_pca_data$label
+label = as.integer(selected_pca_data$label)-1
+label.frame = data.frame(label = label, 
+                         time = selected_pca_data$time, 
+                         id = selected_pca_data$id)
+selected_pca_data$label = NULL
+
+# Make traing and testing set
+n = nrow(selected_pca_data)
+train.index = sample(n, floor(0.75*n))
+train.data = as.matrix(selected_pca_data[train.index,])
+train.label = label[train.index]
+test.data = as.matrix(selected_pca_data[-train.index,] %>% filter(time<61))
+test.label = label.frame[-train.index,] %>% filter(time<61) %>% dplyr::select(label)
+test.label = test.label$label
+
+# Transform the two data sets into xgb.Matrix
+xgb.train = xgb.DMatrix(data=train.data[,3:dim(train.data)[2]],label=train.label)
+xgb.test = xgb.DMatrix(data=test.data[,3:dim(test.data)[2]],label=test.label)
+
+# Define the parameters for multinomial classification
+num_class = length(levels(b_status))
+params = list(
+  booster="gbtree",
+  eta=0.001,
+  max_depth=5,
+  gamma=3,
+  subsample=0.75,
+  colsample_bytree=1,
+  objective="multi:softprob",
+  eval_metric="mlogloss",
+  num_class=num_class
+)
+
+# Train the XGBoost classifer
+xgb.fit=xgb.train(
+  params=params,
+  data=xgb.train,
+  nrounds=10000,
+  nthreads=1,
+  early_stopping_rounds=10,
+  watchlist=list(val1=xgb.train,val2=xgb.test),
+  verbose=0
+)
+
+# Review the final model and results
+xgb.fit
+
+# Predict outcomes with the test data
+xgb.pred = predict(xgb.fit, test.data[,3:dim(test.data)[2]], reshape=T)
+xgb.pred = as.data.frame(xgb.pred)
+xgb.pred = transform(xgb.pred,
+                     time = test.data %>% as.data.frame() %>% dplyr::select(time),
+                     id = test.data %>% as.data.frame() %>% dplyr::select(id),
+                     label = levels(b_status)[test.label+1] %>% as.character() %>% as.numeric())
+colnames(xgb.pred) = c(levels(b_status), 'time', 'id','label')
+
+
+# Use the predicted label with the highest probability
+xgb.pred = aggregate(xgb.pred, list(id = xgb.pred$id), mean)
+xgb.pred = xgb.pred[,2:(dim(xgb.pred)[2])]
+xgb.pred$prediction = apply(xgb.pred[,1:(dim(xgb.pred)[2]-3)],1,
+                            function(x) colnames(xgb.pred[,1:(dim(xgb.pred)[2]-3)][which.max(x)]))
+
+
+# Calculate the final accuracy
+result = sum(xgb.pred$prediction==xgb.pred$label)/nrow(xgb.pred)
+print(paste("Final Accuracy =",sprintf("%1.2f%%", 100*result)))
+MultiLogLoss(y_pred = xgb.pred[,1:(dim(xgb.pred)[2]-4)], 
+        y_true = xgb.pred$label %>% as.character() %>% as.factor())
+
+```
+
+
